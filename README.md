@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Анатомический ассистент на базе онтологии FMA
 
 ## Основные возможности
@@ -22,3 +23,6 @@ python -m venv venv
 .\venv\Scripts\Activate.ps1
 # Установка библиотек:
 pip install -r requirements.txt
+=======
+# course_work
+>>>>>>> 1db6a419f8e1d9ae5f54c8b7c67129b632a6b553
