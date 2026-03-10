@@ -5,7 +5,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1"
 FMA_CSV_PATH = "FMA.csv"
 
 MODELS = {
-    "Qwen-3-235B": "qwen/qwen3-235b-a22b-thinking-2507",
+    "Qwen-3-235B": "qwen/qwen3-vl-235b-a22b-thinking",
     "Llama-3.3-70B": "meta-llama/llama-3.3-70b-instruct:free",
     "Gemma-3-27B": "google/gemma-3-27b-it:free",
     "GPT-OSS-120B": "openai/gpt-oss-120b:free",
