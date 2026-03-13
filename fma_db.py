@@ -1,80 +1,84 @@
 import pandas as pd
 import config
 import os
+import re
 from typing import Optional, Dict, Any, List
 
 class FMADatabase:
-    """
-    Класс для управления доступом к данным онтологии FMA.
-    Обеспечивает поиск по названиям, идентификаторам и реализацию 
-    алгоритмов навигации по графу (прямой и обратный поиск).
-    """
-
     def __init__(self) -> None:
-        """Инициализация базы данных: загрузка CSV и первичная проверка файла."""
-        if not os.path.exists(config.FMA_CSV_PATH):
-            raise FileNotFoundError(f"Файл базы данных не найден: {config.FMA_CSV_PATH}")
+        if not os.path.exists(config.FMA_DB_PATH):
+            raise FileNotFoundError(f"Файл не найден: {config.FMA_DB_PATH}")
         
-        print("Загрузка базы данных FMA... Пожалуйста, подождите.")
-        self.df = pd.read_csv(config.FMA_CSV_PATH, low_memory=False)
-        print(f"База успешно загружена. Количество записей: {len(self.df)}")
+        print(f"Загрузка базы из {config.FMA_DB_PATH}...")
+        self.df = pd.read_csv(config.FMA_DB_PATH, low_memory=False)
+        # Очистка FMAID от лишних точек и пробелов
+        self.df['FMAID'] = self.df['FMAID'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        print(f"База успешно загружена. Записей: {len(self.df)}")
 
-    def _clean_row_data(self, row: pd.Series) -> Dict[str, Any]:
-        """
-        Внутренний метод для преобразования строки DataFrame в чистый словарь.
-        Удаляет пустые значения (NaN) и лишние пробелы.
-        """
-        data = row.to_dict()
-        return {
-            str(k): v for k, v in data.items() 
-            if pd.notna(v) and str(v).strip() != ""
-        }
+    def _clean_row(self, row: pd.Series) -> Dict[str, Any]:
+        """Удаление пустых значений из строки данных."""
+        return {str(k): v for k, v in row.to_dict().items() if pd.notna(v) and str(v).strip() != ""}
 
     def get_entity_by_label(self, label: str) -> Optional[Dict[str, Any]]:
-        """
-        Поиск анатомической сущности по названию (Preferred Label).
-        Сначала ищет точное совпадение, затем пробует частичное.
-        """
-        search_label = str(label).lower().strip()
+        """Поиск объекта по текстовому названию."""
+        s = str(label).lower().strip()
+        exact_match = self.df[self.df['Preferred Label'].str.lower() == s]
+        if not exact_match.empty:
+            return self._clean_row(exact_match.iloc[0])
         
-        result = self.df[self.df['Preferred Label'].str.lower() == search_label]
-        
-        if result.empty:
-            result = self.df[self.df['Preferred Label'].str.contains(label, case=False, na=False)]
-        
-        if result.empty:
-            return None
-        
-        return self._clean_row_data(result.iloc[0])
+        partial_match = self.df[self.df['Preferred Label'].str.contains(label, case=False, na=False)]
+        return self._clean_row(partial_match.iloc[0]) if not partial_match.empty else None
 
     def get_entity_by_id(self, fma_id: str) -> Optional[Dict[str, Any]]:
         """
-        Комплексный поиск по идентификатору с использованием алгоритма обратных связей.
-        Находит саму сущность и все структуры, которые на неё ссылаются.
+        Глубокий поиск по идентификатору. 
+        Собирает прямые данные, обратные связи с ID и семантические соответствия.
         """
-        clean_id = str(fma_id).lower().replace("fma:", "").replace("fma", "").strip()
+        clean_id = ''.join(filter(str.isdigit, str(fma_id)))
+        fma_marker = f"fma{clean_id}" # Тот самый пропущенный маркер
         
-        main_row = self.df[self.df['FMAID'].astype(str).str.contains(clean_id, na=False)]
+        main_row = self.df[self.df['FMAID'] == clean_id]
+        if main_row.empty:
+            main_row = self.df[self.df['Class ID'].str.endswith(f"/{fma_marker}", na=False)]
         
-        if main_row.empty:
-            main_row = self.df[self.df['Class ID'].str.contains(clean_id, na=False)]
-            
-        if main_row.empty:
+        if main_row.empty: 
             return None
-            
-        clean_data = self._clean_row_data(main_row.iloc[0])
         
-        hierarchy_columns = ['part of', 'constitutional part of', 'regional part of']
-        children_names = []
+        clean_data = self._clean_row(main_row.iloc[0])
+        obj_label = clean_data.get('Preferred Label', '')
+
+        print(f"[DB] Сбор связей для: {obj_label} (ID: {clean_id})")
+
+        hierarchy_cols = ['part of', 'constitutional part of', 'regional part of', 'member of', 'contained in', 'located in', 'Parents']
+        related_entities = []
         
-        for col in hierarchy_columns:
+        id_pattern = rf"(?:fma|/|^){clean_id}(?![0-9])"
+
+        for col in hierarchy_cols:
             if col in self.df.columns:
-                matches = self.df[self.df[col].astype(str).str.contains(clean_id, na=False)]
-                children_names.extend(matches['Preferred Label'].tolist())
-        
-        if children_names:
-            unique_children = sorted(list(set(children_names)))
-            clean_data["СВЯЗАННЫЕ СТРУКТУРЫ"] = ", ".join(unique_children)
+                mask = self.df[col].astype(str).str.contains(id_pattern, na=False, regex=True)
+                matches = self.df[mask]
+                
+                for _, row in matches.iterrows():
+                    name = row['Preferred Label']
+                    child_id = row['FMAID']
+                    if name != obj_label:
+                        related_entities.append(f"{name} [ID: {child_id}]")
+
+        semantic_mask = self.df['Preferred Label'].str.lower().str.contains(f"of {obj_label.lower()}", na=False)
+        semantic_matches = self.df[semantic_mask]
+        for _, row in semantic_matches.iterrows():
+            name = row['Preferred Label']
+            child_id = row['FMAID']
+            if name != obj_label:
+                related_entities.append(f"{name} [ID: {child_id}]")
+
+        if related_entities:
+            unique_links = sorted(list(set(related_entities)))
+            clean_data["СВЯЗАННЫЕ СТРУКТУРЫ"] = ", ".join(unique_links[:60])
+            print(f"[DB] Успешно найдено {len(unique_links)} связей с ID.")
+        else:
+            print(f"[DB] Обратных связей не обнаружено.")
             
         return clean_data
 

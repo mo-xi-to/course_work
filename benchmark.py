@@ -1,65 +1,65 @@
 import time
-import config
 from llm_agent import run_anatomy_agent
 
 TEST_QUESTIONS = [
-    {"level": "1. Поиск", "query": "Найди идентификатор FMA для желудка (Stomach)."},
-    {"level": "2. Состав", "query": "Из каких основных частей состоит сердце и к какой системе оно относится?"},
-    {"level": "3. Сосуды", "query": "Какие артерии кровоснабжают аорту и какой нерв ею управляет?"},
-    {"level": "4. Разбор", "query": "Опиши структуру аорты, её ветви и положение в иерархии организма."}
+    {"level": "1. Простой поиск", "query": "Найди идентификатор FMA для желудка (Stomach)."},
+    {"level": "2. Структурный состав", "query": "Из каких основных частей состоит сердце?"},
+    {"level": "3. Функциональные связи", "query": "Какие артерии кровоснабжают аорту и какой нерв ею управляет?"},
+    {"level": "4. Логический вывод", "query": "Если голова есть, обязан ли мозг быть на месте? Докажи по FMA."},
+    {"level": "5. Магистральные цепочки", "query": "Связана ли кровь в большом пальце стопы с аортой? Докажи через цепочку сосудов."}
 ]
 
-def run_benchmark():
-    """Сравнительный анализ всех моделей из конфига."""
+def run_system_evaluation():
+    """Проводит оценку качества ответов и скорости работы ассистента."""
     report_data = []
-    models_to_test = list(config.MODELS.keys())
     
-    print(f"Запуск теста для {len(models_to_test)} моделей...")
+    print(f"Запуск оценки системы (YandexGPT + FMA)...")
+    print(f"Будет выполнено {len(TEST_QUESTIONS)} тестов.\n")
 
-    for alias in models_to_test:
-        print(f"\nТЕСТИРУЮ: {alias}")
+    for item in TEST_QUESTIONS:
+        level = item["level"]
+        query = item["query"]
+        print(f"Тестирую уровень: {level}...")
         
-        for item in TEST_QUESTIONS:
-            level = item["level"]
-            query = item["query"]
-            print(f"Уровень {level}...")
+        start_time = time.time()
+        try:
+            answer = run_anatomy_agent(query)
+            duration = round(time.time() - start_time, 2)
             
-            start_time = time.time()
-            try:
-                answer = run_anatomy_agent(query, model_alias=alias)
-                duration = round(time.time() - start_time, 2)
-                
-                if answer.startswith("ОШИБКА:"):
-                    status = "ОШИБКА"
-                else:
-                    status = "УСПЕХ"
-                
-                report_data.append({
-                    "model": alias,
-                    "level": level,
-                    "time": f"{duration}с",
-                    "status": status,
-                    "answer": answer[:200].replace('\n', ' ') + "..."
-                })
-                print(f"[{status}] за {duration}с")
-                
-            except Exception as e:
-                report_data.append({
-                    "model": alias, "level": level, "time": "-", "status": "КРАХ", "answer": str(e)[:100]
-                })
+            if answer.startswith("ОШИБКА:"):
+                status = "ОШИБКА"
+            else:
+                status = "УСПЕХ"
+            
+            report_data.append({
+                "level": level,
+                "query": query,
+                "time": f"{duration}с",
+                "status": status,
+                "answer": answer.replace('\n', ' ') + "..."
+            })
+            print(f"[{status}] завершено за {duration}с")
+            
+        except Exception as e:
+            report_data.append({
+                "level": level, "query": query, "time": "-", "status": "КРАХ", "answer": str(e)
+            })
+            print(f"[КРАХ] Произошла системная ошибка: {e}")
 
-            time.sleep(20)
+        time.sleep(5)
 
-    with open("benchmark_results.md", "w", encoding="utf-8") as f:
-        f.write("# Результаты тестирования моделей\n\n")
-        f.write("| Модель | Уровень | Время | Статус | Сокращенный ответ |\n")
+    report_filename = "system_evaluation.md"
+    with open(report_filename, "w", encoding="utf-8") as f:
+        f.write("# Отчет об оценке анатомического ассистента\n\n")
+        f.write("Данный отчет содержит результаты тестирования логики многошагового вывода на базе YandexGPT и FMA.\n\n")
+        f.write("| Уровень сложности | Время | Статус | Запрос | Сокращенный ответ |\n")
         f.write("| :--- | :--- | :--- | :--- | :--- |\n")
         
         for r in report_data:
-            line = f"| {r['model']} | {r['level']} | {r['time']} | {r['status']} | {r['answer']} |\n"
+            line = f"| {r['level']} | {r['time']} | {r['status']} | {r['query']} | {r['answer']} |\n"
             f.write(line)
     
-    print(f"\nОтчет создан: benchmark_results.md")
+    print(f"\nОценка завершена! Результаты сохранены в файл: {report_filename}")
 
 if __name__ == "__main__":
-    run_benchmark()
+    run_system_evaluation()
