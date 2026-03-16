@@ -1,36 +1,45 @@
 import os
+import time
 import gradio as gr
+from collections import defaultdict
+
 from llm_agent import run_anatomy_agent
 
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-os.environ["http_proxy"] = ""
-os.environ["https_proxy"] = ""
 
-def chat_function(message: str, history):
-    """
-    Функция-обработчик сообщений для интерфейса Gradio.
-    Принимает текст пользователя и возвращает ответ от ИИ-агента.
-    """
-    if not message.strip():
-        return "Пожалуйста, введите анатомический запрос."
+user_limits = defaultdict(lambda: {"last_reset": time.time(), "count": 0})
+DAILY_LIMIT = 50
+
+def check_rate_limit(request: gr.Request) -> bool:
+    """Проверяет IP пользователя и его суточный лимит."""
+    client_ip = request.client.host
+    now = time.time()
+    user_data = user_limits[client_ip]
+
+    if now - user_data["last_reset"] > 86400:
+        user_data["last_reset"] = now
+        user_data["count"] = 0
+
+    if user_data["count"] >= DAILY_LIMIT:
+        return False 
     
-    answer = run_anatomy_agent(message)
-    return answer
+    user_data["count"] += 1
+    return True
+
+def chat_function(message: str, history, request: gr.Request) -> str:
+    if not check_rate_limit(request):
+        return "Лимит запросов (50 в сутки) исчерпан. Пожалуйста, попробуйте завтра."
+    
+    if not message.strip():
+        return "Пожалуйста, введите запрос."
+        
+    return run_anatomy_agent(message)
 
 demo = gr.ChatInterface(
     fn=chat_function, 
     title="Анатомический Ассистент FMA",
-    description=(
-        "Интеллектуальная система анатомического разбора на базе YandexGPT и онтологии FMA. "
-        "Ассистент умеет строить логические цепочки, находить связи между органами "
-        "и описывать структуру человеческого тела."
-    )
+    description="Интеллектуальная система на базе YandexGPT и онтологии FMA.",
 )
 
 if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("Запуск веб-интерфейса Gradio...")
-    print("Локальный адрес: http://127.0.0.1:7860")
-    print("="*50)
-    
-    demo.launch(server_name="127.0.0.1", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
