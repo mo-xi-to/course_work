@@ -5,29 +5,41 @@ from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 
 import config
+import logger
 from fma_db import db
 from tools import YANDEX_TOOL_SCHEMAS, AVAILABLE_FUNCTIONS
+
+logger = logger.get_logger("Agent")
 
 load_dotenv()
 
 def load_system_prompt() -> str:
-    """Загружает текст системного промпта из внешнего текстового файла instructions.txt."""
+    """
+    Загружает текст системного промпта из внешнего файла.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, config.SYSTEM_PROMPT_PATH)
+    
     try:
-        with open(config.SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
-            return f.read().strip()
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            logger.info(f"Системные инструкции загружены успешно (длина: {len(content)} симв.)")
+            return content
     except FileNotFoundError:
-        return "Ты профессиональный врач-анатом. Отвечай на русском языке, используя базу FMA." 
+        logger.error(f"Файл инструкций не найден по пути: {file_path}")
+        return "Ты профессиональный врач-анатом. Отвечай на русском языке, используя базу FMA."
 
 def call_yandex_api(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     """
-    Выполняет прямой сетевой запрос к API Yandex Foundation Models.
-    Обрабатывает историю диалога и передает схемы инструментов.
+    Выполняет сетевой запрос к API Yandex Foundation Models.
+    Обрабатывает логику Parallel Tool Calling.
     """
     api_key = os.getenv("YANDEX_KEY")
     folder_id = os.getenv("YANDEX_FOLDER_ID")
     
     if not api_key or not folder_id:
-        raise ValueError("Ошибка: В файле .env не заполнены YANDEX_KEY или YANDEX_FOLDER_ID")
+        logger.critical("В файле .env отсутствуют YANDEX_KEY или YANDEX_FOLDER_ID")
+        raise ValueError("Ключи API не настроены.")
 
     headers = {
         "Content-Type": "application/json",
@@ -46,10 +58,12 @@ def call_yandex_api(messages: List[Dict[str, str]]) -> Dict[str, Any]:
         "tools": YANDEX_TOOL_SCHEMAS
     }
 
-    response = requests.post(config.YANDEX_URL, headers=headers, json=payload, timeout=90)
-    
-    if response.status_code != 200:
-        return {"type": "error", "text": f"API Error {response.status_code}: {response.text}"}
+    try:
+        response = requests.post(config.YANDEX_URL, headers=headers, json=payload, timeout=90)
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"Ошибка сетевого запроса к Яндексу: {e}")
+        return {"type": "error", "text": f"Ошибка связи с API: {e}"}
     
     result = response.json()
     message = result['result']['alternatives'][0]['message']
@@ -68,30 +82,32 @@ def call_yandex_api(messages: List[Dict[str, str]]) -> Dict[str, Any]:
 
 def run_anatomy_agent(user_prompt: str) -> str:
     """
-    Запускает многошаговый цикл рассуждения агента.
-    Поддерживает до 15 итераций и защищает от зацикливания.
+    Основная логика многошагового рассуждения агента.
+    Реализует цикл до 15 итераций с защитой от повторных вызовов.
     """
     if not user_prompt.strip():
-        return "Запрос не может быть пустым."
+        return "Запрос пуст."
 
-    system_instruction = load_system_prompt()
+    logger.info(f"Новый запрос пользователя: '{user_prompt[:50]}...'")
     
+    system_instruction = load_system_prompt()
     messages = [
         {"role": "system", "text": system_instruction},
         {"role": "user", "text": user_prompt}
     ]
 
-    print(f"\n[АГЕНТ] Запуск разбора через YandexGPT...")
-    
     calls_history: List[str] = []
 
     for step in range(15):
+        logger.info(f"Шаг рассуждения {step + 1}/15")
+        
         response = call_yandex_api(messages)
         
         if response["type"] == "error":
             return f"ОШИБКА: {response['text']}"
             
         elif response["type"] == "text":
+            logger.info("Агент сформировал финальный ответ.")
             return response["text"]
             
         elif response["type"] == "tool_call":
@@ -99,7 +115,7 @@ def run_anatomy_agent(user_prompt: str) -> str:
             
             combined_results = []
             calls = response["calls"]
-            print(f"[ШАГ {step+1}] Модель запрашивает {len(calls)} инструментов...")
+            logger.info(f"Модель инициировала {len(calls)} вызовов функций.")
 
             for call in calls:
                 fn_name = call["functionCall"]["name"]
@@ -108,18 +124,20 @@ def run_anatomy_agent(user_prompt: str) -> str:
                 call_key = f"{fn_name}_{args}"
                 
                 if call_key in calls_history:
-                    print(f"ПРЕСЕЧЕНО ПОВТОРЕНИЕ: {fn_name}")
-                    result = "ОШИБКА: Эти данные уже были получены ранее. Прямой связи нет. Смени стратегию поиска."
+                    logger.warning(f"Пресечена попытка повторного вызова: {call_key}")
+                    result = "ОШИБКА: Эти данные уже были получены. Прямой связи нет. Смени стратегию поиска."
                 else:
                     calls_history.append(call_key)
                     if fn_name in AVAILABLE_FUNCTIONS:
                         try:
-                            print(f"Выполняю: {fn_name}({args})")
+                            logger.info(f"Выполнение инструмента: {fn_name}")
                             result = AVAILABLE_FUNCTIONS[fn_name](**args)
                         except Exception as e:
-                            result = f"Ошибка выполнения функции: {e}"
+                            logger.error(f"Ошибка внутри инструмента {fn_name}: {e}")
+                            result = f"Ошибка выполнения: {e}"
                     else:
-                        result = "Инструмент не найден в системе."
+                        logger.error(f"Модель вызвала несуществующий инструмент: {fn_name}")
+                        result = "Инструмент не найден."
                 
                 combined_results.append(f"--- Результат {fn_name} ---\n{result}")
 
@@ -128,25 +146,24 @@ def run_anatomy_agent(user_prompt: str) -> str:
                 "text": "ДАННЫЕ ИЗ БАЗЫ FMA:\n\n" + "\n\n".join(combined_results) + "\n\nПроанализируй данные и ответь."
             })
                 
-    return "ОШИБКА: Превышен лимит итераций рассуждения (15 шагов)."
+    logger.error("Агент не смог завершить разбор за 15 шагов.")
+    return "ОШИБКА: Превышен лимит итераций рассуждения."
 
-if __name__ == "__main__":
-    print("\n" + "="*50)
-    print(" АНАТОМИЧЕСКИЙ АССИСТЕНТ (YANDEX GPT + FMA) ")
-    print(" Напишите 'выход' для завершения.")
-    print("="*50)
+if __name__ == "__main__": 
+    logger.setup_logging()
+    print("\nАнатомический ассистентЭ")
     
     while True:
         try:
             query = input("\nВопрос: ")
-            if query.lower() in ["выход", "exit", "стоп", "quit"]:
-                print("Завершение сессии...")
+            if query.lower() in ["выход", "exit", "стоп"]:
                 break
             
-            answer = run_anatomy_agent(query)
-            print(f"\nОТВЕТ:\n{answer}")
+            print("\n" + "-"*30)
+            print(run_anatomy_agent(query))
+            print("-"*30)
             
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"\nКритическая ошибка: {e}")
+            logger.critical(f"Непредвиденный сбой: {e}", exc_info=True)
